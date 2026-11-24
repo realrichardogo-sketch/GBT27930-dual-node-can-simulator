@@ -1,0 +1,26 @@
+# Host build output (scripts/run_host_checks.sh, cmake -B build/...)
+/build/
+
+# Keil MDK build outputs, listings, per-user GUI and debug-session state
+/source/*/MDK-ARM/Project1_G474/
+/source/*/MDK-ARM/Project1_F103/
+/source/*/MDK-ARM/DebugConfig/
+*.uvguix.*
+*.lst
+*.axf
+*.hex
+*.bin
+*.map
+*.o
+*.d
+*.crf
+*.htm
+
+# Logs written by scripts/keil_rebuild.ps1
+/evidence/
+
+# Tool and editor state
+.claude/
+__pycache__/
+*.pyc
+.vscode/

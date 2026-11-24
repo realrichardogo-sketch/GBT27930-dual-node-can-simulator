@@ -1,0 +1,8 @@
+== mutant limit (GBT_FI04_LIMIT_MS 9u -> 10u)
+FAIL /tmp/claude-1000/fi04/mut/limit/tests/sil/test_sil_session.c:1219: m.verdict == GBT_FI04_VERDICT_FAIL (0x1 != 0x2)
+FAIL /tmp/claude-1000/fi04/mut/limit/tests/sil/test_sil_session.c:1220: m.fail_count == 1U (0x0 != 0x1)
+FAIL /tmp/claude-1000/fi04/mut/limit/tests/sil/test_sil_session.c:1221: m.pass_count == 0U (0x1 != 0x0)
+test_sil_session: 1087 checks, 3 failures
+== mutant stale (T1 := pass start, i.e. the pre-pass clock sample)
+FAIL /tmp/claude-1000/fi04/mut/stale/tests/sil/test_sil_session.c:1352: m->elapsed_ms == 4U (0x1 != 0x4)
+test_sil_session: 1087 checks, 2 failures

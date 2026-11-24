@@ -1,0 +1,4 @@
+F103 adapter normal (C2.4): mailbox loads 93, TXOK 93; TP tx complete BRM/BCP/BCS 1/1/9; acceptance mask 0x0; event log 81 entries
+F103 adapter normal + vehicle stop: V->C 93 frames (RTS 11), C->V 80 frames (CTS 11, EOM 11), TX busy retries 18, BST 1
+F103 adapter charger stop: V->C 36 frames (RTS 4), C->V 28 frames (CTS 4, EOM 4), TX busy retries 4, BST 5
+test_port_f103_session: 439 checks, 0 failures

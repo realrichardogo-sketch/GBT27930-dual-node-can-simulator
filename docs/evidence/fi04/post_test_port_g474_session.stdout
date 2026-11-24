@@ -1,0 +1,4 @@
+G474 adapter session (C2.4): TX FIFO accepted 77, TXBTO confirmed 77, pending 0; acceptance mask 0x0; event log 75 entries; BRM RX snapshot == vehicle TX snapshot
+G474 adapter session FI-04: shutdowns 1, seq 3, T0 102764, T1 102765, elapsed 1 ms, verdict 1
+G474 adapter session: charger END via FDCAN fake; V->C frames 89, C->V frames 77, TX FIFO full retries 0
+test_port_g474_session: 297 checks, 0 failures

@@ -1,0 +1,1134 @@
+--- pre/source/Project1_SharedCore/app/gbt_integration.h
++++ post/source/Project1_SharedCore/app/gbt_integration.h
+@@ -54,6 +54,89 @@
+     gbt_evlog_entry_t e[GBT_EVLOG_LEN];
+ } gbt_evlog_t;
+ 
++/*
++ * STEP 07 FI-04: output shutdown response-time measurement (diagnostics only, Keil Watch readable).
++ * SOFTWARE COMMAND ACCEPTANCE ONLY: T1 is the moment the ND-1 output sink accepted the disabled
++ * command (gbt_hal_output_apply == GBT_HAL_OK). It is NOT a measurement of physical power-stage
++ * current decay (Project 1 has no power stage).
++ * Clock: gbt_hal_now_ms() (1 ms resolution, wraps at 2^32; unsigned wrap-safe subtraction).
++ *   T0 = start time of the integration pass PRECEDING the pass in which the disabled command was
++ *        first delivered to the sink. Any event handled in pass P happened after pass P-1 started:
++ *        an RX frame was not yet in the queue when pass P-1 drained it (GBT_HAL_E_EMPTY), a timer
++ *        had not yet expired at pass P-1's tick, an API call between passes came after P-1 began.
++ *        Commands first delivered outside gbt_integ_step() (gbt_integ_detach) use the start of
++ *        the most recent pass. T0 is therefore never later than the event.
++ *   T1 = gbt_hal_now_ms() read immediately after gbt_hal_output_apply() returned GBT_HAL_OK.
++ *   elapsed = T1 - T0; true latency < elapsed + 1 ms, hence PASS only if elapsed <= 9 ms.
++ * A measurement opens when a new command with enabled == 0 is delivered while the last command
++ * ACCEPTED by the sink had enabled == 1, and closes only when a disabled command is accepted
++ * (GBT_HAL_OK) AND the node confirmed exactly that sequence (out_accepted_seq == cmd.seq).
++ * Sink refusals keep it open (the retry is included in the latency). An unchanged command never
++ * gets a new sequence (gbt_safety.c new_command), so a shutdown is counted at most once.
++ * Reference invalid (ref_flags != 0, verdict INVALID, never PASS) when: there is no previous pass
++ * (NO_PREV), the previous pass hit GBT_INTEG_RX_PER_STEP (RX_LIMIT) or ended its RX loop with a
++ * status other than GBT_HAL_E_EMPTY (RX_ERROR), an RX overflow was reported in the previous pass
++ * or in the current pass before the measurement opened (OVERFLOW), or gbt_hal_can_get_status()
++ * failed there so overflow could not be checked (STATUS_ERR).
++ * Written only by the integration layer in main context; never read by the protocol logic.
++ * Zeroed by gbt_integ_attach().
++ */
++#define GBT_FI04_LIMIT_MS          9u     /* PASS: elapsed_ms <= 9 (1 ms tick quantisation) */
++#define GBT_FI04_VERDICT_NONE      0u
++#define GBT_FI04_VERDICT_PASS      1u
++#define GBT_FI04_VERDICT_FAIL      2u
++#define GBT_FI04_VERDICT_INVALID   3u
++#define GBT_FI04_REF_NO_PREV       0x01u
++#define GBT_FI04_REF_RX_LIMIT      0x02u
++#define GBT_FI04_REF_RX_ERROR      0x04u
++#define GBT_FI04_REF_OVERFLOW      0x08u
++#define GBT_FI04_REF_STATUS_ERR    0x10u
++
++typedef struct {
++    /* pass tracking (reference) */
++    uint32_t         passes;              /* gbt_integ_step() passes started (saturating) */
++    uint32_t         pass_start_ms;       /* start of the current / most recent pass */
++    uint32_t         prev_pass_start_ms;  /* start of the pass before it (T0 candidate) */
++    uint8_t          cur_ref_flags;       /* GBT_FI04_REF_* seen so far in the current pass */
++    uint8_t          prev_ref_flags;      /* GBT_FI04_REF_* of the previous (complete) pass */
++    uint8_t          in_pass;             /* 1 while inside gbt_integ_step() */
++    uint8_t          acc_enabled;         /* enabled flag of the last command ACCEPTED by the sink */
++    /* open measurement */
++    uint8_t          open;                /* 1 = disabled command delivered, not yet accepted+confirmed */
++    uint8_t          open_ref_flags;
++    uint32_t         open_t0_ms;
++    uint32_t         open_seq;            /* first disabled command sequence of this shutdown */
++    /* last completed measurement */
++    uint32_t         t0_ms;
++    uint32_t         t1_ms;
++    uint32_t         elapsed_ms;          /* t1_ms - t0_ms (wrap-safe) */
++    uint32_t         first_seq;           /* sequence that opened the measurement */
++    uint32_t         accept_seq;          /* sequence accepted by the sink (differs after a retry) */
++    uint32_t         confirmed_seq;       /* node out_accepted_seq after gbt_node_confirm_output */
++    gbt_hal_status_t apply_status;        /* gbt_hal_output_apply() result of the last delivery while open */
++    uint8_t          ref_flags;           /* GBT_FI04_REF_* of the last completed measurement (0 = valid) */
++    uint8_t          verdict;             /* GBT_FI04_VERDICT_* of the last completed measurement */
++    /* totals since attach (saturating) */
++    uint32_t         shutdowns;           /* accepted + confirmed enabled -> disabled transitions */
++    uint32_t         pass_count;
++    uint32_t         fail_count;
++    uint32_t         invalid_count;
++    uint32_t         max_valid_ms;        /* max elapsed_ms over measurements with a valid reference */
++    uint32_t         refused;             /* deliveries refused by the sink while open */
++    uint32_t         mismatch;            /* GBT_HAL_OK but the node did not confirm that sequence */
++    uint32_t         aborted;             /* open measurement superseded by an accepted enabled command */
++} gbt_fi04_t;
++
++/* Pure bookkeeping (no HAL / node calls); used by gbt_integration.c, exposed for unit tests. */
++void gbt_fi04_pass_begin(gbt_fi04_t *m, uint32_t now_ms);
++void gbt_fi04_pass_note(gbt_fi04_t *m, uint8_t ref_flag);
++void gbt_fi04_pass_end(gbt_fi04_t *m);
++/* After every delivery of a NEW command sequence to the sink: st = gbt_hal_output_apply() result,
++ * confirmed_seq = node out_accepted_seq after gbt_node_confirm_output(), t1_ms = clock read right
++ * after gbt_hal_output_apply() returned. */
++void gbt_fi04_on_apply(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, gbt_hal_status_t st,
++                       uint32_t confirmed_seq, uint32_t t1_ms);
++
+ typedef struct {
+     gbt_node_t      *node;
+     gbt_hal_t       *hal;
+@@ -93,6 +176,7 @@
+     uint8_t          seen_step;             /* last observed node step (event log) */
+     uint32_t         step_changes;          /* protocol step changes observed (saturating) */
+     gbt_evlog_t     *evlog;                 /* optional event log; NULL = disabled */
++    gbt_fi04_t       fi04;                  /* STEP 07 FI-04 shutdown response time (diagnostics) */
+ } gbt_integ_t;
+ 
+ /* bind sink -> claim -> gbt_node_init -> apply initial disabled command. */
+--- pre/source/Project1_SharedCore/app/gbt_integration.c
++++ post/source/Project1_SharedCore/app/gbt_integration.c
+@@ -4,16 +4,129 @@
+ #include <stddef.h>
+ #include <string.h>
+ 
++/* ---- STEP 07 FI-04: shutdown response-time bookkeeping (see gbt_integration.h) ---- */
++static void fi04_sat_inc(uint32_t *c)
++{
++    if (*c != 0xFFFFFFFFu) {
++        (*c)++;
++    }
++}
++
++void gbt_fi04_pass_begin(gbt_fi04_t *m, uint32_t now_ms)
++{
++    if (m == NULL) {
++        return;
++    }
++    if (m->passes == 0U) {
++        m->prev_ref_flags = (uint8_t)GBT_FI04_REF_NO_PREV;
++    } else {
++        m->prev_ref_flags = m->cur_ref_flags;
++    }
++    m->prev_pass_start_ms = m->pass_start_ms;
++    m->pass_start_ms = now_ms;
++    m->cur_ref_flags = 0U;
++    m->in_pass = 1U;
++    fi04_sat_inc(&m->passes);
++}
++
++void gbt_fi04_pass_note(gbt_fi04_t *m, uint8_t ref_flag)
++{
++    if (m != NULL) {
++        m->cur_ref_flags = (uint8_t)(m->cur_ref_flags | ref_flag);
++    }
++}
++
++void gbt_fi04_pass_end(gbt_fi04_t *m)
++{
++    if (m != NULL) {
++        m->in_pass = 0U;
++    }
++}
++
++static void fi04_open(gbt_fi04_t *m, uint32_t seq)
++{
++    m->open = 1U;
++    m->open_seq = seq;
++    if (m->in_pass != 0U) {
++        /* inside pass P: reference = start of pass P-1, validity of P-1 plus overflow / status
++         * problems already seen in P (before this command was delivered) */
++        m->open_t0_ms = m->prev_pass_start_ms;
++        m->open_ref_flags = (uint8_t)(m->prev_ref_flags
++            | (m->cur_ref_flags & (uint8_t)(GBT_FI04_REF_OVERFLOW | GBT_FI04_REF_STATUS_ERR)));
++    } else {
++        /* outside a pass (attach / detach): the triggering call came after the last pass began */
++        m->open_t0_ms = m->pass_start_ms;
++        m->open_ref_flags = (uint8_t)((m->passes == 0U) ? GBT_FI04_REF_NO_PREV : 0U);
++    }
++}
++
++static void fi04_close(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, uint32_t confirmed_seq, uint32_t t1_ms)
++{
++    m->open = 0U;
++    m->t0_ms = m->open_t0_ms;
++    m->t1_ms = t1_ms;
++    m->elapsed_ms = t1_ms - m->open_t0_ms;              /* unsigned: wrap-safe */
++    m->first_seq = m->open_seq;
++    m->accept_seq = cmd->seq;
++    m->confirmed_seq = confirmed_seq;
++    m->ref_flags = m->open_ref_flags;
++    fi04_sat_inc(&m->shutdowns);
++    if (m->ref_flags != 0U) {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_INVALID;
++        fi04_sat_inc(&m->invalid_count);
++        return;
++    }
++    if (m->elapsed_ms > m->max_valid_ms) {
++        m->max_valid_ms = m->elapsed_ms;
++    }
++    if (m->elapsed_ms <= GBT_FI04_LIMIT_MS) {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_PASS;
++        fi04_sat_inc(&m->pass_count);
++    } else {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_FAIL;
++        fi04_sat_inc(&m->fail_count);
++    }
++}
++
++void gbt_fi04_on_apply(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, gbt_hal_status_t st,
++                       uint32_t confirmed_seq, uint32_t t1_ms)
++{
++    if (m == NULL || cmd == NULL) {
++        return;
++    }
++    if (cmd->enabled == 0U && m->acc_enabled != 0U && m->open == 0U) {
++        fi04_open(m, cmd->seq);
++    }
++    if (m->open != 0U) {
++        m->apply_status = st;
++        if (st != GBT_HAL_OK) {
++            fi04_sat_inc(&m->refused);                  /* stays open: the retry is measured */
++        } else if (cmd->enabled != 0U) {
++            m->open = 0U;                               /* output re-enabled before a confirmed shutdown */
++            fi04_sat_inc(&m->aborted);
++        } else if (confirmed_seq != cmd->seq) {
++            fi04_sat_inc(&m->mismatch);                 /* not a confirmed shutdown: stays open */
++        } else {
++            fi04_close(m, cmd, confirmed_seq, t1_ms);
++        }
++    }
++    if (st == GBT_HAL_OK) {
++        m->acc_enabled = (uint8_t)((cmd->enabled != 0U) ? 1U : 0U);
++    }
++}
++
+ /* APPLY: deliver a changed command through the ND-1 sink, then confirm it. */
+ static void apply(gbt_integ_t *ig)
+ {
+     gbt_output_cmd_t cmd;
+     gbt_hal_status_t st;
++    uint32_t t1;
+     gbt_node_get_output(ig->node, &cmd);
+     if (cmd.seq == ig->applied_seq) {
+         return;
+     }
+     st = gbt_hal_output_apply(ig->hal, &cmd);
++    t1 = gbt_hal_now_ms(ig->hal);               /* FI-04 T1: fresh, right after the sink returned */
+     ig->applied_seq = cmd.seq;
+     /* STEP 07-C2 diagnostics: an enabled -> disabled change between two commands delivered
+      * to the sink. The initial disabled command (seq 1) does not count: last_cmd starts zeroed. */
+@@ -23,6 +136,7 @@
+     ig->last_cmd = cmd;
+     ig->last_apply_status = st;
+     gbt_node_confirm_output(ig->node, cmd.seq, st == GBT_HAL_OK, gbt_hal_now_ms(ig->hal));
++    gbt_fi04_on_apply(&ig->fi04, &cmd, st, ig->node->out_accepted_seq, t1);   /* FI-04 diagnostics */
+ }
+ 
+ gbt_hal_status_t gbt_integ_attach(gbt_integ_t *ig, gbt_node_t *node, gbt_hal_t *hal,
+@@ -245,6 +359,7 @@
+ {
+     gbt_can_status_t cs;
+     gbt_can_frame_t f;
++    gbt_hal_status_t rs = GBT_HAL_E_EMPTY;      /* FI-04: status that ended the RX loop */
+     uint32_t now;
+     unsigned i;
+ 
+@@ -252,17 +367,22 @@
+         return;
+     }
+     now = gbt_hal_now_ms(ig->hal);
++    gbt_fi04_pass_begin(&ig->fi04, now);        /* FI-04: reference bookkeeping only */
+     observe(ig, now);                           /* STEP 07-C2.4: changes made outside the loop */
+     if (gbt_hal_can_get_status(ig->hal, &cs) == GBT_HAL_OK) {
+         uint32_t total = cs.rx_overflow_sw + cs.rx_overflow_hw;
+         if (total != ig->last_ovf_total) {
++            gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_OVERFLOW);
+             gbt_node_on_rx_overflow(ig->node, total - ig->last_ovf_total, now);
+             ig->last_ovf_total = total;
+             apply(ig);
+         }
++    } else {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_STATUS_ERR);
+     }
+     for (i = 0U; i < GBT_INTEG_RX_PER_STEP; i++) {
+-        if (gbt_hal_can_receive(ig->hal, &f) != GBT_HAL_OK) {
++        rs = gbt_hal_can_receive(ig->hal, &f);
++        if (rs != GBT_HAL_OK) {
+             break;
+         }
+         ig->last_rx = f;                        /* STEP 07-C2 diagnostics (main context) */
+@@ -275,6 +395,11 @@
+         apply(ig);                              /* output before any frame of this event */
+         observe(ig, now);
+     }
++    if (i >= GBT_INTEG_RX_PER_STEP) {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_RX_LIMIT);   /* queue may not be drained */
++    } else if (rs != GBT_HAL_E_EMPTY) {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_RX_ERROR);   /* not the normal empty status */
++    }
+     {
+         gbt_output_fb_t fb;
+         if (gbt_hal_output_feedback(ig->hal, &fb) == GBT_HAL_OK) {
+@@ -285,6 +410,7 @@
+     apply(ig);
+     observe(ig, now);
+     send(ig, now);
++    gbt_fi04_pass_end(&ig->fi04);
+ }
+ 
+ gbt_hal_status_t gbt_integ_detach(gbt_integ_t *ig)
+--- pre/source/Project1_G474/Core/Src/main.c
++++ post/source/Project1_G474/Core/Src/main.c
+@@ -241,6 +241,10 @@
+ volatile uint32_t g_gbt_accept_pass;
+ /* 128-entry RAM event log; single writer: the integration loop (main context). Full -> frozen. */
+ gbt_evlog_t g_gbt_evlog;
++/* STEP 07 FI-04: copy of the integration layer's shutdown response-time record (refreshed every
++ * 100 ms by gbt_app_diag; fields: Project1_SharedCore/app/gbt_integration.h gbt_fi04_t). Software
++ * command acceptance by the ND-1 sink only - not a physical power-stage measurement. */
++volatile gbt_fi04_t g_gbt_fi04;
+ /* USER CODE END PV */
+ 
+ /* Private function prototypes -----------------------------------------------*/
+@@ -431,6 +435,7 @@
+   g_gbt_tx_full_retries = s_gbt_integ.tx_full_retries;
+   gbt_hw_diag_update(&ns);                            /* STEP 07-C2 flat Watch mirrors */
+   gbt_watch_update(&ns);                              /* STEP 07-C2.4 structured Watch */
++  g_gbt_fi04 = s_gbt_integ.fi04;                      /* STEP 07 FI-04 Watch copy */
+ }
+ 
+ /* ---- STEP 07-C2: flat Keil Watch mirrors (main context only, bounded, no HAL calls) ---- */
+--- pre/regression/gbt27930-sim-lean/app/gbt_integration.h
++++ post/regression/gbt27930-sim-lean/app/gbt_integration.h
+@@ -54,6 +54,89 @@
+     gbt_evlog_entry_t e[GBT_EVLOG_LEN];
+ } gbt_evlog_t;
+ 
++/*
++ * STEP 07 FI-04: output shutdown response-time measurement (diagnostics only, Keil Watch readable).
++ * SOFTWARE COMMAND ACCEPTANCE ONLY: T1 is the moment the ND-1 output sink accepted the disabled
++ * command (gbt_hal_output_apply == GBT_HAL_OK). It is NOT a measurement of physical power-stage
++ * current decay (Project 1 has no power stage).
++ * Clock: gbt_hal_now_ms() (1 ms resolution, wraps at 2^32; unsigned wrap-safe subtraction).
++ *   T0 = start time of the integration pass PRECEDING the pass in which the disabled command was
++ *        first delivered to the sink. Any event handled in pass P happened after pass P-1 started:
++ *        an RX frame was not yet in the queue when pass P-1 drained it (GBT_HAL_E_EMPTY), a timer
++ *        had not yet expired at pass P-1's tick, an API call between passes came after P-1 began.
++ *        Commands first delivered outside gbt_integ_step() (gbt_integ_detach) use the start of
++ *        the most recent pass. T0 is therefore never later than the event.
++ *   T1 = gbt_hal_now_ms() read immediately after gbt_hal_output_apply() returned GBT_HAL_OK.
++ *   elapsed = T1 - T0; true latency < elapsed + 1 ms, hence PASS only if elapsed <= 9 ms.
++ * A measurement opens when a new command with enabled == 0 is delivered while the last command
++ * ACCEPTED by the sink had enabled == 1, and closes only when a disabled command is accepted
++ * (GBT_HAL_OK) AND the node confirmed exactly that sequence (out_accepted_seq == cmd.seq).
++ * Sink refusals keep it open (the retry is included in the latency). An unchanged command never
++ * gets a new sequence (gbt_safety.c new_command), so a shutdown is counted at most once.
++ * Reference invalid (ref_flags != 0, verdict INVALID, never PASS) when: there is no previous pass
++ * (NO_PREV), the previous pass hit GBT_INTEG_RX_PER_STEP (RX_LIMIT) or ended its RX loop with a
++ * status other than GBT_HAL_E_EMPTY (RX_ERROR), an RX overflow was reported in the previous pass
++ * or in the current pass before the measurement opened (OVERFLOW), or gbt_hal_can_get_status()
++ * failed there so overflow could not be checked (STATUS_ERR).
++ * Written only by the integration layer in main context; never read by the protocol logic.
++ * Zeroed by gbt_integ_attach().
++ */
++#define GBT_FI04_LIMIT_MS          9u     /* PASS: elapsed_ms <= 9 (1 ms tick quantisation) */
++#define GBT_FI04_VERDICT_NONE      0u
++#define GBT_FI04_VERDICT_PASS      1u
++#define GBT_FI04_VERDICT_FAIL      2u
++#define GBT_FI04_VERDICT_INVALID   3u
++#define GBT_FI04_REF_NO_PREV       0x01u
++#define GBT_FI04_REF_RX_LIMIT      0x02u
++#define GBT_FI04_REF_RX_ERROR      0x04u
++#define GBT_FI04_REF_OVERFLOW      0x08u
++#define GBT_FI04_REF_STATUS_ERR    0x10u
++
++typedef struct {
++    /* pass tracking (reference) */
++    uint32_t         passes;              /* gbt_integ_step() passes started (saturating) */
++    uint32_t         pass_start_ms;       /* start of the current / most recent pass */
++    uint32_t         prev_pass_start_ms;  /* start of the pass before it (T0 candidate) */
++    uint8_t          cur_ref_flags;       /* GBT_FI04_REF_* seen so far in the current pass */
++    uint8_t          prev_ref_flags;      /* GBT_FI04_REF_* of the previous (complete) pass */
++    uint8_t          in_pass;             /* 1 while inside gbt_integ_step() */
++    uint8_t          acc_enabled;         /* enabled flag of the last command ACCEPTED by the sink */
++    /* open measurement */
++    uint8_t          open;                /* 1 = disabled command delivered, not yet accepted+confirmed */
++    uint8_t          open_ref_flags;
++    uint32_t         open_t0_ms;
++    uint32_t         open_seq;            /* first disabled command sequence of this shutdown */
++    /* last completed measurement */
++    uint32_t         t0_ms;
++    uint32_t         t1_ms;
++    uint32_t         elapsed_ms;          /* t1_ms - t0_ms (wrap-safe) */
++    uint32_t         first_seq;           /* sequence that opened the measurement */
++    uint32_t         accept_seq;          /* sequence accepted by the sink (differs after a retry) */
++    uint32_t         confirmed_seq;       /* node out_accepted_seq after gbt_node_confirm_output */
++    gbt_hal_status_t apply_status;        /* gbt_hal_output_apply() result of the last delivery while open */
++    uint8_t          ref_flags;           /* GBT_FI04_REF_* of the last completed measurement (0 = valid) */
++    uint8_t          verdict;             /* GBT_FI04_VERDICT_* of the last completed measurement */
++    /* totals since attach (saturating) */
++    uint32_t         shutdowns;           /* accepted + confirmed enabled -> disabled transitions */
++    uint32_t         pass_count;
++    uint32_t         fail_count;
++    uint32_t         invalid_count;
++    uint32_t         max_valid_ms;        /* max elapsed_ms over measurements with a valid reference */
++    uint32_t         refused;             /* deliveries refused by the sink while open */
++    uint32_t         mismatch;            /* GBT_HAL_OK but the node did not confirm that sequence */
++    uint32_t         aborted;             /* open measurement superseded by an accepted enabled command */
++} gbt_fi04_t;
++
++/* Pure bookkeeping (no HAL / node calls); used by gbt_integration.c, exposed for unit tests. */
++void gbt_fi04_pass_begin(gbt_fi04_t *m, uint32_t now_ms);
++void gbt_fi04_pass_note(gbt_fi04_t *m, uint8_t ref_flag);
++void gbt_fi04_pass_end(gbt_fi04_t *m);
++/* After every delivery of a NEW command sequence to the sink: st = gbt_hal_output_apply() result,
++ * confirmed_seq = node out_accepted_seq after gbt_node_confirm_output(), t1_ms = clock read right
++ * after gbt_hal_output_apply() returned. */
++void gbt_fi04_on_apply(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, gbt_hal_status_t st,
++                       uint32_t confirmed_seq, uint32_t t1_ms);
++
+ typedef struct {
+     gbt_node_t      *node;
+     gbt_hal_t       *hal;
+@@ -93,6 +176,7 @@
+     uint8_t          seen_step;             /* last observed node step (event log) */
+     uint32_t         step_changes;          /* protocol step changes observed (saturating) */
+     gbt_evlog_t     *evlog;                 /* optional event log; NULL = disabled */
++    gbt_fi04_t       fi04;                  /* STEP 07 FI-04 shutdown response time (diagnostics) */
+ } gbt_integ_t;
+ 
+ /* bind sink -> claim -> gbt_node_init -> apply initial disabled command. */
+--- pre/regression/gbt27930-sim-lean/app/gbt_integration.c
++++ post/regression/gbt27930-sim-lean/app/gbt_integration.c
+@@ -4,16 +4,129 @@
+ #include <stddef.h>
+ #include <string.h>
+ 
++/* ---- STEP 07 FI-04: shutdown response-time bookkeeping (see gbt_integration.h) ---- */
++static void fi04_sat_inc(uint32_t *c)
++{
++    if (*c != 0xFFFFFFFFu) {
++        (*c)++;
++    }
++}
++
++void gbt_fi04_pass_begin(gbt_fi04_t *m, uint32_t now_ms)
++{
++    if (m == NULL) {
++        return;
++    }
++    if (m->passes == 0U) {
++        m->prev_ref_flags = (uint8_t)GBT_FI04_REF_NO_PREV;
++    } else {
++        m->prev_ref_flags = m->cur_ref_flags;
++    }
++    m->prev_pass_start_ms = m->pass_start_ms;
++    m->pass_start_ms = now_ms;
++    m->cur_ref_flags = 0U;
++    m->in_pass = 1U;
++    fi04_sat_inc(&m->passes);
++}
++
++void gbt_fi04_pass_note(gbt_fi04_t *m, uint8_t ref_flag)
++{
++    if (m != NULL) {
++        m->cur_ref_flags = (uint8_t)(m->cur_ref_flags | ref_flag);
++    }
++}
++
++void gbt_fi04_pass_end(gbt_fi04_t *m)
++{
++    if (m != NULL) {
++        m->in_pass = 0U;
++    }
++}
++
++static void fi04_open(gbt_fi04_t *m, uint32_t seq)
++{
++    m->open = 1U;
++    m->open_seq = seq;
++    if (m->in_pass != 0U) {
++        /* inside pass P: reference = start of pass P-1, validity of P-1 plus overflow / status
++         * problems already seen in P (before this command was delivered) */
++        m->open_t0_ms = m->prev_pass_start_ms;
++        m->open_ref_flags = (uint8_t)(m->prev_ref_flags
++            | (m->cur_ref_flags & (uint8_t)(GBT_FI04_REF_OVERFLOW | GBT_FI04_REF_STATUS_ERR)));
++    } else {
++        /* outside a pass (attach / detach): the triggering call came after the last pass began */
++        m->open_t0_ms = m->pass_start_ms;
++        m->open_ref_flags = (uint8_t)((m->passes == 0U) ? GBT_FI04_REF_NO_PREV : 0U);
++    }
++}
++
++static void fi04_close(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, uint32_t confirmed_seq, uint32_t t1_ms)
++{
++    m->open = 0U;
++    m->t0_ms = m->open_t0_ms;
++    m->t1_ms = t1_ms;
++    m->elapsed_ms = t1_ms - m->open_t0_ms;              /* unsigned: wrap-safe */
++    m->first_seq = m->open_seq;
++    m->accept_seq = cmd->seq;
++    m->confirmed_seq = confirmed_seq;
++    m->ref_flags = m->open_ref_flags;
++    fi04_sat_inc(&m->shutdowns);
++    if (m->ref_flags != 0U) {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_INVALID;
++        fi04_sat_inc(&m->invalid_count);
++        return;
++    }
++    if (m->elapsed_ms > m->max_valid_ms) {
++        m->max_valid_ms = m->elapsed_ms;
++    }
++    if (m->elapsed_ms <= GBT_FI04_LIMIT_MS) {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_PASS;
++        fi04_sat_inc(&m->pass_count);
++    } else {
++        m->verdict = (uint8_t)GBT_FI04_VERDICT_FAIL;
++        fi04_sat_inc(&m->fail_count);
++    }
++}
++
++void gbt_fi04_on_apply(gbt_fi04_t *m, const gbt_output_cmd_t *cmd, gbt_hal_status_t st,
++                       uint32_t confirmed_seq, uint32_t t1_ms)
++{
++    if (m == NULL || cmd == NULL) {
++        return;
++    }
++    if (cmd->enabled == 0U && m->acc_enabled != 0U && m->open == 0U) {
++        fi04_open(m, cmd->seq);
++    }
++    if (m->open != 0U) {
++        m->apply_status = st;
++        if (st != GBT_HAL_OK) {
++            fi04_sat_inc(&m->refused);                  /* stays open: the retry is measured */
++        } else if (cmd->enabled != 0U) {
++            m->open = 0U;                               /* output re-enabled before a confirmed shutdown */
++            fi04_sat_inc(&m->aborted);
++        } else if (confirmed_seq != cmd->seq) {
++            fi04_sat_inc(&m->mismatch);                 /* not a confirmed shutdown: stays open */
++        } else {
++            fi04_close(m, cmd, confirmed_seq, t1_ms);
++        }
++    }
++    if (st == GBT_HAL_OK) {
++        m->acc_enabled = (uint8_t)((cmd->enabled != 0U) ? 1U : 0U);
++    }
++}
++
+ /* APPLY: deliver a changed command through the ND-1 sink, then confirm it. */
+ static void apply(gbt_integ_t *ig)
+ {
+     gbt_output_cmd_t cmd;
+     gbt_hal_status_t st;
++    uint32_t t1;
+     gbt_node_get_output(ig->node, &cmd);
+     if (cmd.seq == ig->applied_seq) {
+         return;
+     }
+     st = gbt_hal_output_apply(ig->hal, &cmd);
++    t1 = gbt_hal_now_ms(ig->hal);               /* FI-04 T1: fresh, right after the sink returned */
+     ig->applied_seq = cmd.seq;
+     /* STEP 07-C2 diagnostics: an enabled -> disabled change between two commands delivered
+      * to the sink. The initial disabled command (seq 1) does not count: last_cmd starts zeroed. */
+@@ -23,6 +136,7 @@
+     ig->last_cmd = cmd;
+     ig->last_apply_status = st;
+     gbt_node_confirm_output(ig->node, cmd.seq, st == GBT_HAL_OK, gbt_hal_now_ms(ig->hal));
++    gbt_fi04_on_apply(&ig->fi04, &cmd, st, ig->node->out_accepted_seq, t1);   /* FI-04 diagnostics */
+ }
+ 
+ gbt_hal_status_t gbt_integ_attach(gbt_integ_t *ig, gbt_node_t *node, gbt_hal_t *hal,
+@@ -245,6 +359,7 @@
+ {
+     gbt_can_status_t cs;
+     gbt_can_frame_t f;
++    gbt_hal_status_t rs = GBT_HAL_E_EMPTY;      /* FI-04: status that ended the RX loop */
+     uint32_t now;
+     unsigned i;
+ 
+@@ -252,17 +367,22 @@
+         return;
+     }
+     now = gbt_hal_now_ms(ig->hal);
++    gbt_fi04_pass_begin(&ig->fi04, now);        /* FI-04: reference bookkeeping only */
+     observe(ig, now);                           /* STEP 07-C2.4: changes made outside the loop */
+     if (gbt_hal_can_get_status(ig->hal, &cs) == GBT_HAL_OK) {
+         uint32_t total = cs.rx_overflow_sw + cs.rx_overflow_hw;
+         if (total != ig->last_ovf_total) {
++            gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_OVERFLOW);
+             gbt_node_on_rx_overflow(ig->node, total - ig->last_ovf_total, now);
+             ig->last_ovf_total = total;
+             apply(ig);
+         }
++    } else {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_STATUS_ERR);
+     }
+     for (i = 0U; i < GBT_INTEG_RX_PER_STEP; i++) {
+-        if (gbt_hal_can_receive(ig->hal, &f) != GBT_HAL_OK) {
++        rs = gbt_hal_can_receive(ig->hal, &f);
++        if (rs != GBT_HAL_OK) {
+             break;
+         }
+         ig->last_rx = f;                        /* STEP 07-C2 diagnostics (main context) */
+@@ -275,6 +395,11 @@
+         apply(ig);                              /* output before any frame of this event */
+         observe(ig, now);
+     }
++    if (i >= GBT_INTEG_RX_PER_STEP) {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_RX_LIMIT);   /* queue may not be drained */
++    } else if (rs != GBT_HAL_E_EMPTY) {
++        gbt_fi04_pass_note(&ig->fi04, (uint8_t)GBT_FI04_REF_RX_ERROR);   /* not the normal empty status */
++    }
+     {
+         gbt_output_fb_t fb;
+         if (gbt_hal_output_feedback(ig->hal, &fb) == GBT_HAL_OK) {
+@@ -285,6 +410,7 @@
+     apply(ig);
+     observe(ig, now);
+     send(ig, now);
++    gbt_fi04_pass_end(&ig->fi04);
+ }
+ 
+ gbt_hal_status_t gbt_integ_detach(gbt_integ_t *ig)
+--- pre/regression/gbt27930-sim-lean/tests/sil/test_sil_session.c
++++ post/regression/gbt27930-sim-lean/tests/sil/test_sil_session.c
+@@ -257,6 +257,42 @@
+     return (uint32_t)(t1 - t0);
+ }
+ 
++/* STEP 07 FI-04: charger (node 0) shutdown measurement after one stop. ref_flags = expected
++ * reference flags (0 = valid). legacy = latency already measured by the scenario (trigger ->
++ * sim_plant first_disable_ms); the conservative bound must never be smaller than it. */
++static void check_fi04(world_t *w, uint8_t ref_flags, uint32_t legacy, const char *what)
++{
++    const gbt_fi04_t *m = &w->ig[0].fi04;
++    CHECK_EQ_U(m->shutdowns, 1U);                          /* exactly one counted shutdown */
++    CHECK_EQ_U(m->open, 0U);                               /* nothing pending after acceptance */
++    CHECK_EQ_U(m->apply_status, GBT_HAL_OK);
++    CHECK_EQ_U(m->accept_seq, m->confirmed_seq);
++    CHECK_EQ_U(m->accept_seq, w->sil.node[0].out_accepted_seq);
++    CHECK_EQ_U(m->accept_seq, w->sil.hal[0].accepted_seq); /* HAL recorded the same sequence */
++    CHECK_EQ_U(m->accept_seq, w->plant[0].last.seq);
++    CHECK_EQ_U(w->plant[0].last.enabled, 0U);
++    CHECK_EQ_U(m->t1_ms, w->plant[0].first_disable_ms);    /* T1 = sink acceptance tick */
++    CHECK_EQ_U(m->elapsed_ms, (uint32_t)(m->t1_ms - m->t0_ms));
++    CHECK(m->elapsed_ms >= legacy);                        /* conservative: never below the trigger latency */
++    CHECK_EQ_U(m->ref_flags, ref_flags);
++    CHECK_EQ_U(m->refused + m->mismatch + m->aborted, 0U);
++    if (ref_flags == 0U) {
++        CHECK_EQ_U(m->verdict, GBT_FI04_VERDICT_PASS);
++        CHECK(m->elapsed_ms <= GBT_FI04_LIMIT_MS);
++        CHECK_EQ_U(m->pass_count, 1U);
++        CHECK_EQ_U(m->max_valid_ms, m->elapsed_ms);
++    } else {
++        CHECK_EQ_U(m->verdict, GBT_FI04_VERDICT_INVALID);  /* never reported as PASS */
++        CHECK_EQ_U(m->pass_count, 0U);
++        CHECK_EQ_U(m->invalid_count, 1U);
++        CHECK_EQ_U(m->max_valid_ms, 0U);
++    }
++    printf("SIL FI-04 %s: shutdowns %lu, seq %lu, T0 %lu, T1 %lu, elapsed %lu ms (trigger latency %lu ms), "
++           "ref flags 0x%02X, verdict %u\n", what, (unsigned long)m->shutdowns, (unsigned long)m->accept_seq,
++           (unsigned long)m->t0_ms, (unsigned long)m->t1_ms, (unsigned long)m->elapsed_ms,
++           (unsigned long)legacy, (unsigned)m->ref_flags, (unsigned)m->verdict);
++}
++
+ static void reach_charging(world_t *w)
+ {
+     CHECK(run_until_phase(w, 0U, GBT_NODE_PHASE_CHARGING, 20000U) != 0xFFFFFFFFu);
+@@ -570,6 +606,7 @@
+            (unsigned long)latency(w->first_bst_ms, w->plant[0].first_disable_ms));
+     check_normal_session_tp_stats(w, first);               /* STEP 07-C2 */
+     check_c24_normal(w, first);                            /* STEP 07-C2.4 */
++    check_fi04(w, 0U, latency(w->first_bst_ms, w->plant[0].first_disable_ms), "vehicle stop (BST)");
+ }
+ 
+ static void scenario_charger_stop(void)
+@@ -590,6 +627,7 @@
+     CHECK_EQ_U(w->first_cst.data[0], 0x04U);               /* SPN3521 bits 3-4: manual stop */
+     printf("SIL charger stop: T-2 latency %lu ms, BST frames %lu\n",
+            (unsigned long)latency(t, w->plant[0].first_disable_ms), (unsigned long)w->bst_count);
++    check_fi04(w, 0U, latency(t, w->plant[0].first_disable_ms), "charger stop");
+ }
+ 
+ static void scenario_bcl_timeout(void)
+@@ -610,6 +648,7 @@
+     CHECK_EQ_U(w->plant[0].last.enabled, 0U);
+     printf("SIL BCL timeout: T-4 latency %lu ms after TO-14 deadline, CEM frames %lu\n",
+            (unsigned long)latency(deadline, w->plant[0].first_disable_ms), (unsigned long)w->cem_count);
++    check_fi04(w, 0U, latency(deadline, w->plant[0].first_disable_ms), "BCL timeout (TO-14)");
+ }
+ 
+ static void scenario_ccs_timeout(void)
+@@ -626,6 +665,7 @@
+     CHECK(run_until_phase(w, 1U, GBT_NODE_PHASE_EXIT, 2000U) != 0xFFFFFFFFu);
+     printf("SIL CCS timeout: charger output disabled %lu ms after BEM\n",
+            (unsigned long)latency(w->first_bem_ms, w->plant[0].first_disable_ms));
++    check_fi04(w, 0U, latency(w->first_bem_ms, w->plant[0].first_disable_ms), "CCS timeout (BEM)");
+ }
+ 
+ static void scenario_current_out_of_range(void)
+@@ -651,6 +691,7 @@
+     CHECK_EQ_U(w->first_cst.data[2], 0x04U);               /* SPN3522 bits 11-12 other fault */
+     printf("SIL out-of-range current: T-3a latency %lu ms\n",
+            (unsigned long)latency(t, w->plant[0].first_disable_ms));
++    check_fi04(w, 0U, latency(t, w->plant[0].first_disable_ms), "out-of-range current");
+ }
+ 
+ static void scenario_missing_tp_dt(void)
+@@ -755,6 +796,7 @@
+            (unsigned long)latency(w->first_low_bcl_ms, w->first_cst_ms),
+            (unsigned)w->first_cst.data[0], (unsigned)w->first_cst.data[1],
+            (unsigned)w->first_cst.data[2], (unsigned)w->first_cst.data[3], (unsigned long)w->bst_count);
++    check_fi04(w, 0U, latency(w->first_low_bcl_ms, w->plant[0].first_disable_ms), "voltage minimum");
+ }
+ 
+ /* ---- T-5: RX queue overflow (SAF-1, AC-6, TST-3) ---- */
+@@ -785,6 +827,7 @@
+     printf("SIL T-5 %s: %lu frame(s) lost -> output disabled %lu ms, CST %lu ms after the loss\n", what,
+            (unsigned long)lost, (unsigned long)latency(t, w->plant[0].first_disable_ms),
+            (unsigned long)latency(t, w->first_cst_ms));
++    check_fi04(w, (uint8_t)GBT_FI04_REF_OVERFLOW, latency(t, w->plant[0].first_disable_ms), what);
+ }
+ 
+ static void scenario_rx_queue_overflow(void)
+@@ -948,6 +991,370 @@
+            (unsigned long)w->ig[0].rx_seq);
+ }
+ 
++/* ---- STEP 07 FI-04: shutdown response-time bookkeeping, unit level (pure functions) ---- */
++static gbt_output_cmd_t fi04_cmd(uint32_t seq, uint8_t enabled)
++{
++    gbt_output_cmd_t c;
++    memset(&c, 0, sizeof c);
++    c.seq = seq;
++    c.enabled = enabled;
++    if (enabled != 0U) {
++        c.voltage_mv = 400000U;
++        c.current_ma = 100000U;
++    }
++    return c;
++}
++
++static void fi04_apply(gbt_fi04_t *m, uint32_t seq, uint8_t enabled, gbt_hal_status_t st,
++                       uint32_t confirmed, uint32_t t1)
++{
++    gbt_output_cmd_t c = fi04_cmd(seq, enabled);
++    gbt_fi04_on_apply(m, &c, st, confirmed, t1);
++}
++
++/* attach-like history: pass at t (initial disabled seq 1, enabled seq 2 accepted), pass at t+1.
++ * The next pass_begin(t+2) then has a valid reference T0 = t+1. */
++static void fi04_setup(gbt_fi04_t *m, uint32_t t)
++{
++    memset(m, 0, sizeof *m);
++    gbt_fi04_pass_begin(m, t);
++    fi04_apply(m, 1U, 0U, GBT_HAL_OK, 1U, t);
++    fi04_apply(m, 2U, 1U, GBT_HAL_OK, 2U, t);
++    gbt_fi04_pass_end(m);
++    gbt_fi04_pass_begin(m, t + 1U);
++    gbt_fi04_pass_end(m);
++    CHECK_EQ_U(m->shutdowns, 0U);                          /* initial disabled command not counted */
++    CHECK_EQ_U(m->acc_enabled, 1U);
++}
++
++static void scenario_fi04_unit(void)
++{
++    gbt_fi04_t m;
++
++    /* 1. enabled -> disabled transition */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1003U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.shutdowns, 1U);
++    CHECK_EQ_U(m.open, 0U);
++    CHECK_EQ_U(m.t0_ms, 1001U);
++    CHECK_EQ_U(m.t1_ms, 1003U);
++    CHECK_EQ_U(m.elapsed_ms, 2U);
++    CHECK_EQ_U(m.first_seq, 3U);
++    CHECK_EQ_U(m.accept_seq, 3U);
++    CHECK_EQ_U(m.confirmed_seq, 3U);
++    CHECK_EQ_U(m.apply_status, GBT_HAL_OK);
++    CHECK_EQ_U(m.ref_flags, 0U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++    CHECK_EQ_U(m.pass_count, 1U);
++    CHECK_EQ_U(m.acc_enabled, 0U);
++
++    /* 2. repeated disabled command: same sequence again and a further disabled sequence */
++    gbt_fi04_pass_begin(&m, 1004U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1004U);
++    fi04_apply(&m, 4U, 0U, GBT_HAL_OK, 4U, 1004U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.shutdowns, 1U);
++    CHECK_EQ_U(m.pass_count, 1U);
++    CHECK_EQ_U(m.open, 0U);
++
++    /* 3. sink error: never counted; stays open; the accepted retry closes it (latency includes it) */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_E_IO, 2U, 1002U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.open, 1U);
++    CHECK_EQ_U(m.shutdowns, 0U);
++    CHECK_EQ_U(m.refused, 1U);
++    CHECK_EQ_U(m.apply_status, GBT_HAL_E_IO);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_NONE);
++    CHECK_EQ_U(m.acc_enabled, 1U);                         /* sink still holds the enabled command */
++    gbt_fi04_pass_begin(&m, 1003U);
++    fi04_apply(&m, 4U, 0U, GBT_HAL_E_IO, 2U, 1003U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.refused, 2U);
++    CHECK_EQ_U(m.shutdowns, 0U);
++    gbt_fi04_pass_begin(&m, 1005U);
++    fi04_apply(&m, 5U, 0U, GBT_HAL_OK, 5U, 1005U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.shutdowns, 1U);
++    CHECK_EQ_U(m.first_seq, 3U);
++    CHECK_EQ_U(m.accept_seq, 5U);
++    CHECK_EQ_U(m.t0_ms, 1001U);                            /* reference of the FIRST delivery */
++    CHECK_EQ_U(m.elapsed_ms, 4U);
++    CHECK_EQ_U(m.apply_status, GBT_HAL_OK);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++
++    /* 3b. open measurement superseded by an accepted enabled command: aborted, not counted */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_E_IO, 2U, 1002U);
++    fi04_apply(&m, 4U, 1U, GBT_HAL_OK, 4U, 1002U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.aborted, 1U);
++    CHECK_EQ_U(m.open, 0U);
++    CHECK_EQ_U(m.shutdowns, 0U);
++
++    /* 4. sequence mismatch: GBT_HAL_OK but the node did not confirm that sequence */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 2U, 1002U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.mismatch, 1U);
++    CHECK_EQ_U(m.shutdowns, 0U);
++    CHECK_EQ_U(m.open, 1U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_NONE);
++    gbt_fi04_pass_begin(&m, 1003U);
++    fi04_apply(&m, 4U, 0U, GBT_HAL_OK, 4U, 1003U);         /* a later confirmed disabled command */
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.shutdowns, 1U);
++    CHECK_EQ_U(m.accept_seq, 4U);
++
++    /* 5. invalid T0: no previous pass */
++    memset(&m, 0, sizeof m);
++    fi04_apply(&m, 2U, 1U, GBT_HAL_OK, 2U, 500U);          /* outside any pass, before the first one */
++    gbt_fi04_pass_begin(&m, 501U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 501U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.shutdowns, 1U);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_NO_PREV);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++    CHECK_EQ_U(m.invalid_count, 1U);
++    CHECK_EQ_U(m.pass_count + m.fail_count, 0U);
++    CHECK_EQ_U(m.max_valid_ms, 0U);
++    memset(&m, 0, sizeof m);                               /* outside a pass with no pass at all */
++    fi04_apply(&m, 2U, 1U, GBT_HAL_OK, 2U, 500U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 500U);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_NO_PREV);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++    fi04_setup(&m, 1000U);                                 /* outside a pass after passes: T0 = last pass start */
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1004U);
++    CHECK_EQ_U(m.t0_ms, 1001U);
++    CHECK_EQ_U(m.elapsed_ms, 3U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++
++    /* 6. RX frame limit in the previous pass -> invalid; in the current pass only -> still valid */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_RX_LIMIT);
++    gbt_fi04_pass_end(&m);
++    gbt_fi04_pass_begin(&m, 1003U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1003U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_RX_LIMIT);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1002U);         /* frame popped before the limit was reached */
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_RX_LIMIT);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, 0U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++
++    /* 7. unexpected RX HAL error (not GBT_HAL_E_EMPTY) in the previous pass -> invalid */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_RX_ERROR);
++    gbt_fi04_pass_end(&m);
++    gbt_fi04_pass_begin(&m, 1003U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1003U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_RX_ERROR);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++
++    /* 8. RX overflow: previous pass, or current pass before the command -> invalid; status read failure too */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_OVERFLOW);
++    gbt_fi04_pass_end(&m);
++    gbt_fi04_pass_begin(&m, 1003U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1003U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_OVERFLOW);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_OVERFLOW);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1002U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_OVERFLOW);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    gbt_fi04_pass_note(&m, (uint8_t)GBT_FI04_REF_STATUS_ERR);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1002U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.ref_flags, GBT_FI04_REF_STATUS_ERR);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_INVALID);
++
++    /* 9. timestamp wraparound */
++    fi04_setup(&m, 0xFFFFFFFDu);                           /* passes at ...FD, ...FE */
++    gbt_fi04_pass_begin(&m, 0xFFFFFFFFu);
++    gbt_fi04_pass_end(&m);
++    gbt_fi04_pass_begin(&m, 0x00000001u);                  /* T0 = 0xFFFFFFFF */
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 0x00000002u);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.t0_ms, 0xFFFFFFFFu);
++    CHECK_EQ_U(m.t1_ms, 0x00000002u);
++    CHECK_EQ_U(m.elapsed_ms, 3U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++
++    /* 10. 9 ms boundary: PASS */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1010U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.elapsed_ms, 9U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_PASS);
++    CHECK_EQ_U(m.pass_count, 1U);
++    CHECK_EQ_U(m.max_valid_ms, 9U);
++
++    /* 11. 10 ms boundary: FAIL */
++    fi04_setup(&m, 1000U);
++    gbt_fi04_pass_begin(&m, 1002U);
++    fi04_apply(&m, 3U, 0U, GBT_HAL_OK, 3U, 1011U);
++    gbt_fi04_pass_end(&m);
++    CHECK_EQ_U(m.elapsed_ms, 10U);
++    CHECK_EQ_U(m.verdict, GBT_FI04_VERDICT_FAIL);
++    CHECK_EQ_U(m.fail_count, 1U);
++    CHECK_EQ_U(m.pass_count, 0U);
++    CHECK_EQ_U(m.max_valid_ms, 10U);
++    printf("FI-04 unit: transition, repeat, sink error, abort, seq mismatch, no-prev / RX-limit / RX-error / "
++           "overflow / status references, wrap, 9 ms PASS, 10 ms FAIL checked\n");
++}
++
++/* ---- STEP 07 FI-04: integration level (gbt_integ_step + fake HAL + sim plant) ---- */
++/* Repeated stop requests produce one disabled sequence and one counted shutdown. */
++static void scenario_fi04_repeated_stop(void)
++{
++    world_t *w = &W;
++    uint32_t t;
++    uint32_t seq;
++    world_init(w, 1000U, 0U);
++    reach_charging(w);
++    sim_plant_arm_disable_capture(&w->plant[0]);
++    t = w->sil.now_ms;
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, t);
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, t);
++    gbt_sil_run(&w->sil, 5U);
++    seq = w->sil.node[0].out_cmd.seq;
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, w->sil.now_ms);
++    CHECK(run_until_phase(w, 0U, GBT_NODE_PHASE_END, 15000U) != 0xFFFFFFFFu);
++    gbt_sil_run(&w->sil, 2000U);
++    CHECK_EQ_U(w->sil.node[0].out_cmd.seq, seq);           /* no new command after the first disable */
++    CHECK_EQ_U(w->ig[0].output_shutdowns, 1U);
++    check_fi04(w, 0U, latency(t, w->plant[0].first_disable_ms), "repeated stop requests");
++}
++
++/* The sink refuses the disabled command for 20 ms: no shutdown is counted while refused; the
++ * accepted retry closes the measurement and the 20 ms are inside the latency -> FAIL. */
++static void scenario_fi04_sink_refusal(void)
++{
++    world_t *w = &W;
++    const gbt_fi04_t *m = &w->ig[0].fi04;
++    uint32_t t;
++    world_init(w, 1000U, 0U);
++    reach_charging(w);
++    sim_plant_arm_disable_capture(&w->plant[0]);
++    w->plant[0].reply = GBT_HAL_E_IO;
++    t = w->sil.now_ms;
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, t);
++    gbt_sil_run(&w->sil, 20U);
++    CHECK_EQ_U(m->open, 1U);
++    CHECK_EQ_U(m->shutdowns, 0U);
++    CHECK(m->refused >= 1U);
++    CHECK_EQ_U(m->apply_status, GBT_HAL_E_IO);
++    CHECK_EQ_U(m->verdict, GBT_FI04_VERDICT_NONE);
++    CHECK_EQ_U(w->plant[0].disable_seen, 0U);
++    w->plant[0].reply = GBT_HAL_OK;
++    gbt_sil_run(&w->sil, 2000U);
++    CHECK_EQ_U(m->open, 0U);
++    CHECK_EQ_U(m->shutdowns, 1U);
++    CHECK(m->accept_seq > m->first_seq);                   /* accepted on a retry sequence */
++    CHECK_EQ_U(m->accept_seq, m->confirmed_seq);
++    CHECK_EQ_U(m->apply_status, GBT_HAL_OK);
++    CHECK_EQ_U(m->t1_ms, w->plant[0].first_disable_ms);
++    CHECK(m->elapsed_ms >= 20U);
++    CHECK(m->elapsed_ms >= latency(t, w->plant[0].first_disable_ms));
++    CHECK_EQ_U(m->ref_flags, 0U);
++    CHECK_EQ_U(m->verdict, GBT_FI04_VERDICT_FAIL);
++    CHECK_EQ_U(m->fail_count, 1U);
++    CHECK_EQ_U(m->pass_count, 0U);
++    printf("SIL FI-04 sink refusal 20 ms: refused %lu, first seq %lu, accepted seq %lu, elapsed %lu ms, "
++           "verdict %u (FAIL expected); legacy output_shutdowns %lu\n", (unsigned long)m->refused,
++           (unsigned long)m->first_seq, (unsigned long)m->accept_seq, (unsigned long)m->elapsed_ms,
++           (unsigned)m->verdict, (unsigned long)w->ig[0].output_shutdowns);
++}
++
++/* The pass before the stop hit GBT_INTEG_RX_PER_STEP (16 frames, no overflow): reference invalid. */
++static void scenario_fi04_rx_limit(void)
++{
++    world_t *w = &W;
++    gbt_can_frame_t f;
++    uint32_t t;
++    uint32_t n;
++    uint32_t i;
++    world_init(w, 1000U, 0U);                              /* order: charger first in every tick */
++    reach_charging(w);
++    sim_plant_arm_disable_capture(&w->plant[0]);
++    memset(&f, 0, sizeof f);
++    f.id = 0x18FF5601u;                                    /* not from the vehicle: ignored (§5.5) */
++    f.dlc = 8U;
++    f.flags = (uint8_t)GBT_CAN_FLAG_EXT;
++    n = GBT_FAKE_RXQ_LEN - w->sil.hal[0].rx_count;         /* fill the queue exactly, no overflow */
++    for (i = 0U; i < n; i++) {
++        CHECK(gbt_fake_hal_inject_rx(&w->sil.hal[0], &f) == GBT_HAL_OK);
++    }
++    CHECK_EQ_U(w->sil.hal[0].rx_count, GBT_INTEG_RX_PER_STEP);
++    gbt_sil_tick(&w->sil);                                 /* charger pass pops 16 frames: limit reached */
++    CHECK_EQ_U(w->sil.hal[0].status.rx_overflow_sw + w->sil.hal[0].status.rx_overflow_hw, 0U);
++    CHECK_EQ_U(w->ig[0].fi04.cur_ref_flags, GBT_FI04_REF_RX_LIMIT);
++    t = w->sil.now_ms;
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, t);
++    CHECK(run_until_phase(w, 0U, GBT_NODE_PHASE_END, 15000U) != 0xFFFFFFFFu);
++    check_fi04(w, (uint8_t)GBT_FI04_REF_RX_LIMIT, latency(t, w->plant[0].first_disable_ms), "RX frame limit");
++}
++
++/* T1 freshness: a test sink that delegates to the sim plant and then lets 3 ms of virtual time
++ * pass for a disabled command (a slow backend). T1 must include those 3 ms; the plant itself
++ * timestamps on entry. A T1 taken from the clock sampled before the pass would not. */
++static gbt_output_sink_t g_fi04_inner;
++static uint32_t         *g_fi04_clock;
++
++static gbt_hal_status_t fi04_slow_apply(void *ctx, const gbt_output_cmd_t *cmd)
++{
++    gbt_hal_status_t st = g_fi04_inner.apply(ctx, cmd);
++    if (cmd->enabled == 0U) {
++        *g_fi04_clock += 3U;                               /* time spent inside the backend */
++    }
++    return st;
++}
++
++static void scenario_fi04_t1_fresh(void)
++{
++    world_t *w = &W;
++    const gbt_fi04_t *m = &w->ig[0].fi04;
++    uint32_t t;
++    world_init(w, 1000U, 0U);
++    reach_charging(w);
++    sim_plant_arm_disable_capture(&w->plant[0]);
++    g_fi04_inner = w->sil.hal[0].sink;                     /* fake HAL test hook: wrap the bound sink */
++    g_fi04_clock = &w->sil.now_ms;
++    w->sil.hal[0].sink.apply = fi04_slow_apply;
++    t = w->sil.now_ms;
++    gbt_node_request_stop(&w->sil.node[0], GBT_STOP_REASON_REQUEST, t);
++    gbt_sil_tick(&w->sil);
++    w->sil.hal[0].sink = g_fi04_inner;
++    CHECK_EQ_U(m->shutdowns, 1U);
++    CHECK_EQ_U(m->t1_ms, w->plant[0].first_disable_ms + 3U);   /* read AFTER the sink returned */
++    CHECK_EQ_U(m->t0_ms, t);
++    CHECK_EQ_U(m->elapsed_ms, 4U);                         /* 1 ms tick + 3 ms in the backend */
++    CHECK_EQ_U(m->verdict, GBT_FI04_VERDICT_PASS);
++    printf("SIL FI-04 T1 freshness: plant accepted at %lu, T1 %lu (3 ms backend time included), elapsed %lu ms\n",
++           (unsigned long)w->plant[0].first_disable_ms, (unsigned long)m->t1_ms, (unsigned long)m->elapsed_ms);
++}
++
+ int main(void)
+ {
+     scenario_normal_vehicle_stop(0U);
+@@ -963,5 +1370,10 @@
+     scenario_rx_overflow_not_charging();                    /* T-5 outside charging */
+     scenario_driver_refusal_not_counted();                  /* STEP 07-C2 event levels */
+     scenario_start_order();                 /* STEP 07-C2.4 */
++    scenario_fi04_unit();                                   /* STEP 07 FI-04 */
++    scenario_fi04_repeated_stop();
++    scenario_fi04_sink_refusal();
++    scenario_fi04_rx_limit();
++    scenario_fi04_t1_fresh();
+     return TEST_SUMMARY("test_sil_session");
+ }
+--- pre/regression/gbt27930-sim-lean/tests/sil/test_port_g474_session.c
++++ post/regression/gbt27930-sim-lean/tests/sil/test_port_g474_session.c
+@@ -265,7 +265,27 @@
+            "acceptance mask 0x%lX; event log %lu entries; BRM RX snapshot == vehicle TX snapshot\n",
+            (unsigned long)dg.tx_frames, (unsigned long)dg.tx_confirmed, (unsigned long)dg.tx_pending,
+            (unsigned long)accept_mask_charger(&st, &cs, &dg), (unsigned long)EVLOG.count);
++    /* STEP 07 FI-04: vehicle stop -> exactly one accepted + confirmed shutdown, valid reference,
++     * software command acceptance <= 9 ms (port_g474 clock = HAL_GetTick fake). */
++    CHECK_EQ_U(IG.fi04.shutdowns, 1U);
++    CHECK_EQ_U(IG.fi04.open, 0U);
++    CHECK_EQ_U(IG.fi04.ref_flags, 0U);
++    CHECK_EQ_U(IG.fi04.verdict, GBT_FI04_VERDICT_PASS);
++    CHECK_EQ_U(IG.fi04.pass_count, 1U);
++    CHECK_EQ_U(IG.fi04.fail_count + IG.fi04.invalid_count + IG.fi04.refused + IG.fi04.mismatch, 0U);
++    CHECK(IG.fi04.elapsed_ms <= GBT_FI04_LIMIT_MS);
++    CHECK_EQ_U(IG.fi04.max_valid_ms, IG.fi04.elapsed_ms);
++    CHECK_EQ_U(IG.fi04.apply_status, GBT_HAL_OK);
++    CHECK_EQ_U(IG.fi04.accept_seq, IG.fi04.confirmed_seq);
++    CHECK_EQ_U(IG.fi04.accept_seq, CHG.out_accepted_seq);
++    CHECK_EQ_U(IG.fi04.accept_seq, P.accepted_seq);        /* port recorded the same sequence */
++    CHECK_EQ_U(PLANT.last.seq, IG.fi04.accept_seq);        /* last command the plant accepted */
++    CHECK_EQ_U(IG.fi04.t1_ms, PLANT.last_accept_ms);       /* same tick as the plant's acceptance */
++    printf("G474 adapter session FI-04: shutdowns %lu, seq %lu, T0 %lu, T1 %lu, elapsed %lu ms, verdict %u\n",
++           (unsigned long)IG.fi04.shutdowns, (unsigned long)IG.fi04.accept_seq, (unsigned long)IG.fi04.t0_ms,
++           (unsigned long)IG.fi04.t1_ms, (unsigned long)IG.fi04.elapsed_ms, (unsigned)IG.fi04.verdict);
+     CHECK(gbt_integ_detach(&IG) == GBT_HAL_OK);
++    CHECK_EQ_U(IG.fi04.shutdowns, 1U);                     /* detach: output already disabled, no new count */
+     CHECK(gbt_port_g474_deinit(&P) == GBT_HAL_OK);
+     printf("G474 adapter session: charger END via FDCAN fake; V->C frames %lu, C->V frames %lu, "
+            "TX FIFO full retries %lu\n", (unsigned long)frames_v2c, (unsigned long)frames_c2v,
+--- pre/regression/gbt27930-sim-lean/tests/sil/test_port_f103_session.c
++++ post/regression/gbt27930-sim-lean/tests/sil/test_port_f103_session.c
+@@ -219,7 +219,13 @@
+     CHECK_EQ_U(dt_order_errors, 0U);                      /* TP.DT order preserved (D1) */
+     CHECK_EQ_U(g_fake_f1.rx_overwritten, 0U);
+     CHECK_EQ_U(H.ErrorCode, HAL_CAN_ERROR_NONE);
++    /* STEP 07 FI-04: the vehicle output is never enabled -> no shutdown is measured or counted. */
++    CHECK_EQ_U(IG.fi04.shutdowns, 0U);
++    CHECK_EQ_U(IG.fi04.open, 0U);
++    CHECK_EQ_U(IG.fi04.verdict, GBT_FI04_VERDICT_NONE);
++    CHECK(IG.fi04.passes > 0U);
+     CHECK(gbt_integ_detach(&IG) == GBT_HAL_OK);
++    CHECK_EQ_U(IG.fi04.shutdowns, 0U);
+     CHECK(gbt_port_f103_deinit(&P) == GBT_HAL_OK);
+     printf("F103 adapter %s: V->C %lu frames (RTS %lu), C->V %lu frames (CTS %lu, EOM %lu), "
+            "TX busy retries %lu, BST %lu\n", name, (unsigned long)frames_v2c, (unsigned long)rts_v2c,

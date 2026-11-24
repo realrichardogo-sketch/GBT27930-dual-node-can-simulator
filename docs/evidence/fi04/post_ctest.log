@@ -1,0 +1,68 @@
+Test project /tmp/claude-1000/fi04/build_post
+      Start  1: bootstrap_smoke
+ 1/30 Test  #1: bootstrap_smoke ..................   Passed    0.00 sec
+      Start  2: test_ring
+ 2/30 Test  #2: test_ring ........................   Passed    0.00 sec
+      Start  3: test_outbox
+ 3/30 Test  #3: test_outbox ......................   Passed    0.00 sec
+      Start  4: test_timer
+ 4/30 Test  #4: test_timer .......................   Passed    0.00 sec
+      Start  5: test_id
+ 5/30 Test  #5: test_id ..........................   Passed    0.00 sec
+      Start  6: test_codec
+ 6/30 Test  #6: test_codec .......................   Passed    0.00 sec
+      Start  7: test_bits
+ 7/30 Test  #7: test_bits ........................   Passed    0.00 sec
+      Start  8: test_codec_ext
+ 8/30 Test  #8: test_codec_ext ...................   Passed    0.00 sec
+      Start  9: test_tp
+ 9/30 Test  #9: test_tp ..........................   Passed    0.00 sec
+      Start 10: test_hal_fake
+10/30 Test #10: test_hal_fake ....................   Passed    0.00 sec
+      Start 11: test_sil_infra
+11/30 Test #11: test_sil_infra ...................   Passed    0.00 sec
+      Start 12: test_sil_session
+12/30 Test #12: test_sil_session .................   Passed    0.01 sec
+      Start 13: test_port_linux
+13/30 Test #13: test_port_linux ..................   Passed    0.00 sec
+      Start 14: test_spsc
+14/30 Test #14: test_spsc ........................   Passed    0.00 sec
+      Start 15: test_spsc_signal
+15/30 Test #15: test_spsc_signal .................   Passed    1.01 sec
+      Start 16: test_port_g474
+16/30 Test #16: test_port_g474 ...................   Passed    0.00 sec
+      Start 17: test_port_g474_session
+17/30 Test #17: test_port_g474_session ...........   Passed    0.00 sec
+      Start 18: test_port_g474_asan
+18/30 Test #18: test_port_g474_asan ..............   Passed    0.01 sec
+      Start 19: test_port_f103
+19/30 Test #19: test_port_f103 ...................   Passed    0.00 sec
+      Start 20: test_port_f103_session
+20/30 Test #20: test_port_f103_session ...........   Passed    0.00 sec
+      Start 21: test_port_f103_asan
+21/30 Test #21: test_port_f103_asan ..............   Passed    0.01 sec
+      Start 22: test_port_f103_session_asan
+22/30 Test #22: test_port_f103_session_asan ......   Passed    0.01 sec
+      Start 23: linux_sil_vcan
+23/30 Test #23: linux_sil_vcan ...................***Skipped   0.01 sec
+      Start 24: architecture_rules
+24/30 Test #24: architecture_rules ...............   Passed    0.01 sec
+      Start 25: protocol_no_writable_statics
+25/30 Test #25: protocol_no_writable_statics .....   Passed    0.01 sec
+      Start 26: source_manifest
+26/30 Test #26: source_manifest ..................   Passed    0.00 sec
+      Start 27: cross_c99_cortex_m
+27/30 Test #27: cross_c99_cortex_m ...............   Passed    1.00 sec
+      Start 28: cross_c99_spsc
+28/30 Test #28: cross_c99_spsc ...................   Passed    0.11 sec
+      Start 29: cross_c99_g474
+29/30 Test #29: cross_c99_g474 ...................   Passed    0.24 sec
+      Start 30: cross_c99_f103
+30/30 Test #30: cross_c99_f103 ...................   Passed    0.24 sec
+
+100% tests passed, 0 tests failed out of 30
+
+Total Test time (real) =   2.70 sec
+
+The following tests did not run:
+	 23 - linux_sil_vcan (Skipped)

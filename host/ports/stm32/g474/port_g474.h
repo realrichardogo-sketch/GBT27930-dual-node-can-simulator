@@ -1,0 +1,1 @@
+../../../../source/Project1_SharedCore/ports/stm32/g474/port_g474.h

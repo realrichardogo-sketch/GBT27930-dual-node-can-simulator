@@ -1,0 +1,2 @@
+# Keep every file byte-identical to the hardware-tested source: no end-of-line conversion.
+* -text

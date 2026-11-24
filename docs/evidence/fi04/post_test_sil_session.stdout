@@ -1,0 +1,40 @@
+SIL normal session + vehicle stop (order 0): T-1 latency 1 ms
+SIL first BRM/BCP/BCS sessions (order 0): DT 7/2/2 = 11, CTS 1/1/1, EOM 1/1/1
+SIL driver acceptance (order 0): vehicle TP.DT 27 TP.CM 11, charger TP.CM 22, all frames vehicle 93 charger 76
+SIL TP statistics (order 0): sessions 11 (BRM 1, BCP 1, BCS 9), DT 27, RTS/CTS/EOM 11/11/11, completions tx 11 rx 11, aborts 0, timeouts 0, charger output shutdowns 1
+SIL C2.4 (order 0): charger steps 2 3 4 5 7 8 9 10 13 41; vehicle steps 22 23 25 26 29 30 31 32 33 41
+SIL C2.4 (order 0): completions charger rx BRM/BCP/BCS/other 1/1/9/0, vehicle tx 1/1/9/0; BRM snapshot 49 B identical; max DT interval tx 10 rx 10 ms; max session tx 62 rx 61 ms; event log entries charger 81 vehicle 81
+SIL FI-04 vehicle stop (BST): shutdowns 1, seq 3, T0 102766, T1 102767, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL normal session + vehicle stop (order 1): T-1 latency 0 ms
+SIL first BRM/BCP/BCS sessions (order 1): DT 7/2/2 = 11, CTS 1/1/1, EOM 1/1/1
+SIL driver acceptance (order 1): vehicle TP.DT 27 TP.CM 11, charger TP.CM 22, all frames vehicle 93 charger 76
+SIL TP statistics (order 1): sessions 11 (BRM 1, BCP 1, BCS 9), DT 27, RTS/CTS/EOM 11/11/11, completions tx 11 rx 11, aborts 0, timeouts 0, charger output shutdowns 1
+SIL C2.4 (order 1): charger steps 2 3 4 5 7 8 9 10 13 41; vehicle steps 22 23 25 26 29 30 31 32 33 41
+SIL C2.4 (order 1): completions charger rx BRM/BCP/BCS/other 1/1/9/0, vehicle tx 1/1/9/0; BRM snapshot 49 B identical; max DT interval tx 10 rx 10 ms; max session tx 62 rx 61 ms; event log entries charger 81 vehicle 81
+SIL FI-04 vehicle stop (BST): shutdowns 1, seq 3, T0 102766, T1 102767, elapsed 1 ms (trigger latency 0 ms), ref flags 0x00, verdict 1
+SIL charger stop: T-2 latency 1 ms, BST frames 5
+SIL FI-04 charger stop: shutdowns 1, seq 3, T0 101066, T1 101067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL BCL timeout: T-4 latency 1 ms after TO-14 deadline, CEM frames 4
+SIL FI-04 BCL timeout (TO-14): shutdowns 1, seq 3, T0 102065, T1 102066, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL CCS timeout: charger output disabled 1 ms after BEM
+SIL FI-04 CCS timeout (BEM): shutdowns 1, seq 3, T0 102066, T1 102067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL out-of-range current: T-3a latency 1 ms
+SIL FI-04 out-of-range current: shutdowns 1, seq 3, T0 101066, T1 101067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL missing TP_DT: transport failures 1, CEM 0, session continued
+SIL missing TP_DT statistics: charger abort_tx 1 (reason 7), vehicle abort_rx 1, completions 4
+SIL T-3c voltage minimum: 200.0 V accepted for 1000 ms; 199.9 V -> output disabled 1 ms, CST 1 ms after the BCL; CST 10 00 00 C4; BST frames 5
+SIL FI-04 voltage minimum: shutdowns 1, seq 4, T0 102115, T1 102116, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL T-5 software RX queue full: 4 frame(s) lost -> output disabled 1 ms, CST 1 ms after the loss
+SIL FI-04 software RX queue full: shutdowns 1, seq 3, T0 101066, T1 101067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x08, verdict 3
+SIL T-5 hardware FIFO overflow: 1 frame(s) lost -> output disabled 1 ms, CST 1 ms after the loss
+SIL FI-04 hardware FIFO overflow: shutdowns 1, seq 3, T0 101066, T1 101067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x08, verdict 3
+SIL T-5 outside charging: charger overflow counted (1), no stop, charging reached; vehicle overflow counted (1), vehicle phase 3
+SIL driver refusal (300 ms window): TP RTS queued +1, driver accepted +0, dropped +8; 3 s after recovery: accepted +97, sender TP timeouts 1
+SIL start order A (vehicle first, charger +30 s): both END (steps 41/41), TP BRM/BCP/BCS 1/1/9
+SIL start order B (charger first, vehicle +12 s): vehicle phase 7 step 42 last RX 081FF456, charger step 42 rx 0 (reproduces the pre-C2.4 hardware observation)
+FI-04 unit: transition, repeat, sink error, abort, seq mismatch, no-prev / RX-limit / RX-error / overflow / status references, wrap, 9 ms PASS, 10 ms FAIL checked
+SIL FI-04 repeated stop requests: shutdowns 1, seq 3, T0 101066, T1 101067, elapsed 1 ms (trigger latency 1 ms), ref flags 0x00, verdict 1
+SIL FI-04 sink refusal 20 ms: refused 20, first seq 3, accepted seq 23, elapsed 21 ms, verdict 2 (FAIL expected); legacy output_shutdowns 1
+SIL FI-04 RX frame limit: shutdowns 1, seq 3, T0 101067, T1 101068, elapsed 1 ms (trigger latency 1 ms), ref flags 0x02, verdict 3
+SIL FI-04 T1 freshness: plant accepted at 101067, T1 101070 (3 ms backend time included), elapsed 4 ms
+test_sil_session: 1087 checks, 0 failures
