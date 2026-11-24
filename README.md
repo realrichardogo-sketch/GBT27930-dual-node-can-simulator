@@ -179,6 +179,15 @@ records: [`docs/evidence/`](docs/evidence).
 
 The full list is in [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md).
 
+## Development journey
+
+[`docs/PROJECT_JOURNEY.md`](docs/PROJECT_JOURNEY.md) traces the project from STEP 00 to STEP 07:
+- a roadmap table;
+- for each step, its objective, implementation, key decisions, evidence and verdict;
+- a final summary of the ARMCC builds, the 10 FI-04 hardware runs and the CONDITIONAL PASS closeout.
+
+Recommended screenshots are listed in [`docs/assets/journey/`](docs/assets/journey/README.md).
+
 ## Project status
 
 STEP 07 (dual-node STM32 integration, transport protocol on hardware, FI-04 fault injection) is
